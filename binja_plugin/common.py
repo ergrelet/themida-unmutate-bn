@@ -1,10 +1,17 @@
 from binaryninja import BinaryView, BinaryReader, BinaryWriter  # type:ignore
+from binaryninja.log import Logger  # type:ignore
 
 from miasm.analysis.binary import Container
 from miasm.analysis.machine import Machine
 from miasm.core.asmblock import AsmCFG, asm_resolve_final
 from miasm.core.locationdb import LocationDB
 from themida_unmutate.miasm_utils import MiasmContext, MiasmFunctionInterval, generate_code_redirect_patch
+from themida_unmutate.unwrapping import unwrap_functions
+from themida_unmutate.symbolic_execution import disassemble_and_simplify_functions
+
+from . import plugin
+
+logger = Logger(session_id=0, logger_name=plugin.NAME)
 
 
 def get_binary_data(bv: BinaryView) -> bytearray:
@@ -29,23 +36,54 @@ def get_binary_data(bv: BinaryView) -> bytearray:
     return exe_data
 
 
-def create_miasm_context(arch: str, binary_base_address: int, binary_data: bytearray) -> MiasmContext:
+def create_miasm_context(arch: str, binary_base_address: int,
+                         binary_data: bytearray) -> MiasmContext:
     """
     Create `MiasmContext` from a `bytearray`, given the architecture and base address.
     """
     loc_db = LocationDB()
     machine = Machine(arch)
     assert machine.dis_engine is not None
-    container = Container.from_string(binary_data, loc_db, addr=binary_base_address)
+    container = Container.from_string(binary_data,
+                                      loc_db,
+                                      addr=binary_base_address)
     mdis = machine.dis_engine(container.bin_stream, loc_db=loc_db)
     lifter = machine.lifter(loc_db)
 
     return MiasmContext(loc_db, container, machine, mdis, lifter)
 
 
+def deobfuscate_addresses(bv: BinaryView, arch: str,
+                          mutated_code_addresses: list[int]) -> None:
+    binary_data = get_binary_data(bv)
+    miasm_ctx = create_miasm_context(arch, bv.original_base, binary_data)
+
+    logger.log_info("Resolving mutated function(s)' address(es)...")
+    mutated_func_addrs = unwrap_functions(miasm_ctx, mutated_code_addresses)
+
+    # Disassemble mutated functions and simplify them
+    logger.log_info("Deobfuscating mutated function(s)...")
+    simplified_func_asmcfgs = disassemble_and_simplify_functions(
+        miasm_ctx, mutated_func_addrs)
+
+    # Map protected functions' addresses to their corresponding simplified `AsmCFG`
+    func_addr_to_simplified_cfg = {
+        mutated_code_addresses[i]: asm_cfg
+        for i, asm_cfg in enumerate(simplified_func_asmcfgs)
+    }
+
+    # Rewrite the protected binary with the simplified function
+    logger.log_info("Patching binary file...")
+    rebuild_simplified_binary(miasm_ctx, func_addr_to_simplified_cfg, bv)
+
+    # Relaunch analysis to take our changes into account
+    bv.update_analysis()
+
+
 def rebuild_simplified_binary(
     miasm_ctx: MiasmContext,
-    func_addr_to_simplified_cfg: dict[int, tuple[AsmCFG, MiasmFunctionInterval]],
+    func_addr_to_simplified_cfg: dict[int, tuple[AsmCFG,
+                                                 MiasmFunctionInterval]],
     bv: BinaryView,
 ) -> None:
     """
@@ -75,19 +113,22 @@ def rebuild_simplified_binary(
         miasm_ctx.loc_db.set_location_offset(head, target_addr)
 
         # Generate the simplified machine code
-        new_section_patches = asm_resolve_final(miasm_ctx.mdis.arch,
-                                                simplified_asmcfg,
-                                                dst_interval=orignal_asmcfg_interval)
+        new_section_patches = asm_resolve_final(
+            miasm_ctx.mdis.arch,
+            simplified_asmcfg,
+            dst_interval=orignal_asmcfg_interval)
 
         # Apply patches
         for address, data in new_section_patches.items():
             bw.write(bytes(data), address)
 
         # Associate original addr to simplified addr
-        original_to_simplified[protected_func_addr] = min(new_section_patches.keys())
+        original_to_simplified[protected_func_addr] = min(
+            new_section_patches.keys())
 
     # Redirect functions to their simplified versions
     for target_addr in func_addr_to_simplified_cfg.keys():
         simplified_func_addr = original_to_simplified[target_addr]
-        address, data = generate_code_redirect_patch(miasm_ctx, target_addr, simplified_func_addr)
+        address, data = generate_code_redirect_patch(miasm_ctx, target_addr,
+                                                     simplified_func_addr)
         bw.write(data, address)
