@@ -1,4 +1,4 @@
-# themida-unmutate-bn (v0.1.0)
+# themida-unmutate-bn (v0.2.0)
 
 Author: **Erwan Grelet**
 
