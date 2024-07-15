@@ -3,9 +3,11 @@ from binaryninja.log import Logger  # type:ignore
 
 from miasm.analysis.binary import Container
 from miasm.analysis.machine import Machine
-from miasm.core.asmblock import AsmCFG, asm_resolve_final
+from miasm.core.asmblock import AsmCFG
 from miasm.core.locationdb import LocationDB
-from themida_unmutate.miasm_utils import MiasmContext, MiasmFunctionInterval, generate_code_redirect_patch
+from themida_unmutate.miasm_utils import (MiasmContext, MiasmFunctionInterval,
+                                          generate_code_redirect_patch,
+                                          asm_resolve_final_in_place)
 from themida_unmutate.unwrapping import unwrap_functions
 from themida_unmutate.symbolic_execution import disassemble_and_simplify_functions
 
@@ -82,7 +84,7 @@ def deobfuscate_addresses(bv: BinaryView, arch: str,
 
 def rebuild_simplified_binary(
     miasm_ctx: MiasmContext,
-    func_addr_to_simplified_cfg: dict[int, tuple[AsmCFG,
+    func_addr_to_simplified_cfg: dict[int, tuple[int, AsmCFG,
                                                  MiasmFunctionInterval]],
     bv: BinaryView,
 ) -> None:
@@ -94,26 +96,11 @@ def rebuild_simplified_binary(
     # Reassemble simplified AsmCFGs
     original_to_simplified: dict[int, int] = {}
     for protected_func_addr, val in func_addr_to_simplified_cfg.items():
-        simplified_asmcfg, orignal_asmcfg_interval = val
-
-        # Unpin blocks to be able to relocate the CFG
-        head = simplified_asmcfg.heads()[0]
-        for asm_block in simplified_asmcfg.blocks:
-            miasm_ctx.loc_db.unset_location_offset(asm_block.loc_key)
-
-        # Start rewriting at the first part of the interval (i.e., at the start
-        # of the mutated code)
-        target_addr: int = orignal_asmcfg_interval.intervals[0][0]
-        # Unpin loc_key if it's pinned
-        original_loc = miasm_ctx.loc_db.get_offset_location(target_addr)
-        if original_loc is not None:
-            miasm_ctx.loc_db.unset_location_offset(original_loc)
-
-        # Relocate the function's entry block
-        miasm_ctx.loc_db.set_location_offset(head, target_addr)
+        original_code_addr, simplified_asmcfg, orignal_asmcfg_interval = val
 
         # Generate the simplified machine code
-        new_section_patches = asm_resolve_final(
+        new_section_patches = asm_resolve_final_in_place(
+            miasm_ctx.loc_db,
             miasm_ctx.mdis.arch,
             simplified_asmcfg,
             dst_interval=orignal_asmcfg_interval)
@@ -123,8 +110,7 @@ def rebuild_simplified_binary(
             bw.write(bytes(data), address)
 
         # Associate original addr to simplified addr
-        original_to_simplified[protected_func_addr] = min(
-            new_section_patches.keys())
+        original_to_simplified[protected_func_addr] = original_code_addr
 
     # Redirect functions to their simplified versions
     for target_addr in func_addr_to_simplified_cfg.keys():
