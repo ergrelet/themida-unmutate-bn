@@ -1,2 +1,2 @@
 miasm
-themida-unmutate==0.1.2
+themida-unmutate==0.2.0

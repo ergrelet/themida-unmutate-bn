@@ -44,7 +44,7 @@ def create_miasm_context(arch: str, binary_base_address: int,
     Create `MiasmContext` from a `bytearray`, given the architecture and base address.
     """
     loc_db = LocationDB()
-    machine = Machine(arch)
+    machine = Machine(_get_miasm_arch_from_binja_arch(arch))
     assert machine.dis_engine is not None
     container = Container.from_string(binary_data,
                                       loc_db,
@@ -118,3 +118,11 @@ def rebuild_simplified_binary(
         address, data = generate_code_redirect_patch(miasm_ctx, target_addr,
                                                      simplified_func_addr)
         bw.write(data, address)
+
+
+def _get_miasm_arch_from_binja_arch(arch: str) -> str:
+    match arch:
+        case "x86":
+            return "x86_32"
+        case _:
+            return arch

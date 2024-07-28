@@ -6,7 +6,7 @@ from binaryninja.plugin import BackgroundTaskThread  # type:ignore
 
 from . import common, plugin
 
-SUPPORTED_ARCHS = ["x86_64"]
+SUPPORTED_ARCHS = ["x86_64", "x86"]
 
 logger = Logger(session_id=0, logger_name=plugin.NAME)
 
