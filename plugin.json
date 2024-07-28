@@ -18,7 +18,7 @@
   "dependencies": {
     "pip": ["miasm", "themida-unmutate"]
   },
-  "version": "0.2.1",
+  "version": "0.3.0",
   "author": "Erwan Grelet",
   "minimumbinaryninjaversion": 3164
 }
